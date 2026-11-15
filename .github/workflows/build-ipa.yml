@@ -31,30 +31,53 @@ jobs:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
         run: |
-          mkdir -p build-system/ghostgram-codesigning
-          cp -R build-system/fake-codesigning/* build-system/ghostgram-codesigning/
-
+          mkdir -p build-system/ghostgram-codesigning/certs
+          mkdir -p build-system/ghostgram-codesigning/profiles
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp build-system/fake-codesigning/profiles/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
 
+          # Генерируем свежий самоподписанный сертификат (встроенный в репо истёк 30.10.2026)
+          /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout fake_key.pem -out fake_cert.pem -days 3650 \
+            -subj "/CN=Apple Development: Fake (0000000000)/OU=FakeTeam/O=Fake/C=US"
+          /usr/bin/openssl x509 -in fake_cert.pem -outform DER -out fake_cert.der
+          /usr/bin/openssl pkcs12 -export -inkey fake_key.pem -in fake_cert.pem \
+            -passout pass: -out build-system/ghostgram-codesigning/certs/fake.p12
+
+          # Импортируем свежий сертификат в разблокированный Keychain
           KEYCHAIN_PATH=$RUNNER_TEMP/fake.keychain
           security create-keychain -p "" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "" "$KEYCHAIN_PATH"
-          for cert in build-system/fake-codesigning/certs/*.p12; do
-            [ -f "$cert" ] && security import "$cert" -k "$KEYCHAIN_PATH" -P "" -T /usr/bin/codesign || true
-          done
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH" || true
+          security import build-system/ghostgram-codesigning/certs/fake.p12 -k "$KEYCHAIN_PATH" -P "" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH"
 
-          FIRST_PROFILE=$(ls build-system/fake-codesigning/profiles/*.mobileprovision | head -n 1)
-          security cms -D -i "$FIRST_PROFILE" > fake_profile.plist
+          # Продлеваем ExpirationDate во всех fake .mobileprovision до 2035 года
           python3 - << 'EOF'
-          import json, os, plistlib
+          import datetime, glob, json, os, plistlib, subprocess
 
-          with open('fake_profile.plist', 'rb') as fp:
-              plist = plistlib.load(fp)
-          team_id = plist['TeamIdentifier'][0]
+          with open('fake_cert.der', 'rb') as cf:
+              cert_der = cf.read()
+
+          team_id = None
+          for prof_path in glob.glob('build-system/fake-codesigning/profiles/*.mobileprovision'):
+              raw_xml = subprocess.check_output(['security', 'cms', '-D', '-i', prof_path])
+              plist = plistlib.loads(raw_xml)
+              plist['ExpirationDate'] = datetime.datetime(2035, 1, 1, 0, 0, 0)
+              plist['DeveloperCertificates'] = [cert_der]
+              if team_id is None:
+                  team_id = plist['TeamIdentifier'][0]
+
+              with open('updated.plist', 'wb') as out_p:
+                  plistlib.dump(plist, out_p)
+
+              out_prof = os.path.join('build-system/ghostgram-codesigning/profiles', os.path.basename(prof_path))
+              subprocess.check_call([
+                  '/usr/bin/openssl', 'smime', '-sign', '-nodetach', '-binary',
+                  '-in', 'updated.plist', '-signer', 'fake_cert.pem', '-inkey', 'fake_key.pem',
+                  '-outform', 'DER', '-out', out_prof
+              ])
+              subprocess.check_call(['cp', out_prof, os.path.expanduser('~/Library/MobileDevice/Provisioning Profiles/')])
 
           with open('build-system/ghostgram-configuration.example.json', 'r') as f:
               cfg = json.load(f)
@@ -67,7 +90,7 @@ jobs:
           with open('build-system/ghostgram-configuration.json', 'w') as f:
               json.dump(cfg, f, indent=2)
           EOF
-          rm -f fake_profile.plist
+          rm -f fake_key.pem fake_cert.pem fake_cert.der updated.plist
 
       - name: Build Ghostgram IPA
         run: |
