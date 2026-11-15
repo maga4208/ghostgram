@@ -71,7 +71,7 @@ jobs:
           EOF
           rm -f fake_profile.plist
 
-- name: Build Ghostgram IPA
+        - name: Build Ghostgram IPA
         run: |
           chmod +x build-system/GGBuildRelease.sh
           ./build-system/GGBuildRelease.sh 100
