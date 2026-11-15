@@ -37,7 +37,6 @@ jobs:
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp build-system/fake-codesigning/profiles/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
 
-          # Создаём временный разблокированный Keychain для фейкового сертификата
           KEYCHAIN_PATH=$RUNNER_TEMP/fake.keychain
           security create-keychain -p "" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -48,7 +47,6 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH" || true
           security list-keychains -d user -s "$KEYCHAIN_PATH"
 
-          # Автоматически вытаскиваем Team ID из fake-codesigning и пишем конфиг
           FIRST_PROFILE=$(ls build-system/fake-codesigning/profiles/*.mobileprovision | head -n 1)
           security cms -D -i "$FIRST_PROFILE" > fake_profile.plist
           python3 - << 'EOF'
@@ -71,7 +69,7 @@ jobs:
           EOF
           rm -f fake_profile.plist
 
-        - name: Build Ghostgram IPA
+      - name: Build Ghostgram IPA
         run: |
           chmod +x build-system/GGBuildRelease.sh
           ./build-system/GGBuildRelease.sh 100
