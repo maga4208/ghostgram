@@ -71,12 +71,17 @@ jobs:
           EOF
           rm -f fake_profile.plist
 
-      - name: Build Ghostgram IPA
+- name: Build Ghostgram IPA
         run: |
           chmod +x build-system/GGBuildRelease.sh
-          ./build-system/GGBuildRelease.sh
+          ./build-system/GGBuildRelease.sh 100
           mkdir -p release-artifact
-          find build-output -name "*.ipa" -exec cp {} release-artifact/Ghostgram-unsigned.ipa \;
+          IPA_FILE=$(find build-output -name "*.ipa" 2>/dev/null | head -n 1)
+          if [ -z "$IPA_FILE" ]; then
+            IPA_FILE=$(find . -maxdepth 5 -name "*.ipa" -not -path "./.git/*" | head -n 1)
+          fi
+          echo "Found IPA: $IPA_FILE"
+          cp "$IPA_FILE" release-artifact/Ghostgram-unsigned.ipa
 
       - name: Upload Unsigned IPA
         uses: actions/upload-artifact@v4
