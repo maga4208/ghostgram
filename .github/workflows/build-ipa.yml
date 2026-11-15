@@ -1,0 +1,86 @@
+name: Build Ghostgram Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Go for VLESS VPN core
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.26'
+
+      - name: Build VLESS VPN core
+        run: |
+          if [ -f "Ghostgram/Features/Vless/Core/build-core.sh" ]; then
+            chmod +x Ghostgram/Features/Vless/Core/build-core.sh
+            ./Ghostgram/Features/Vless/Core/build-core.sh
+          fi
+
+      - name: Setup Fake Codesigning & Config
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: |
+          mkdir -p build-system/ghostgram-codesigning
+          cp -R build-system/fake-codesigning/* build-system/ghostgram-codesigning/
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp build-system/fake-codesigning/profiles/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
+
+          # Создаём временный разблокированный Keychain для фейкового сертификата
+          KEYCHAIN_PATH=$RUNNER_TEMP/fake.keychain
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          for cert in build-system/fake-codesigning/certs/*.p12; do
+            [ -f "$cert" ] && security import "$cert" -k "$KEYCHAIN_PATH" -P "" -T /usr/bin/codesign || true
+          done
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH" || true
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          # Автоматически вытаскиваем Team ID из fake-codesigning и пишем конфиг
+          FIRST_PROFILE=$(ls build-system/fake-codesigning/profiles/*.mobileprovision | head -n 1)
+          security cms -D -i "$FIRST_PROFILE" > fake_profile.plist
+          python3 - << 'EOF'
+          import json, os, plistlib
+
+          with open('fake_profile.plist', 'rb') as fp:
+              plist = plistlib.load(fp)
+          team_id = plist['TeamIdentifier'][0]
+
+          with open('build-system/ghostgram-configuration.example.json', 'r') as f:
+              cfg = json.load(f)
+
+          cfg['api_id'] = int(os.environ['TG_API_ID'])
+          cfg['api_hash'] = os.environ['TG_API_HASH']
+          cfg['team_id'] = team_id
+          cfg['bundle_id'] = 'ph.telegra.Telegraph'
+
+          with open('build-system/ghostgram-configuration.json', 'w') as f:
+              json.dump(cfg, f, indent=2)
+          EOF
+          rm -f fake_profile.plist
+
+      - name: Build Ghostgram IPA
+        run: |
+          chmod +x build-system/GGBuildRelease.sh
+          ./build-system/GGBuildRelease.sh
+          mkdir -p release-artifact
+          find build-output -name "*.ipa" -exec cp {} release-artifact/Ghostgram-unsigned.ipa \;
+
+      - name: Upload Unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ghostgram-unsigned-IPA
+          path: release-artifact/Ghostgram-unsigned.ipa
+          retention-days: 7
